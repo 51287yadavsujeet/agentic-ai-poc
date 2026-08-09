@@ -9,7 +9,7 @@ set JAVA_OPTS=^
     -Dio.netty.tryReflectionSetAccessible=false ^
     -Dio.netty.noUnsafe=true
 
-set OPENAI_API_KEY=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
+set OPENAI_API_KEY=ADD YOUR KEY
 
 echo Starting Agentic AI POC...
 echo.
