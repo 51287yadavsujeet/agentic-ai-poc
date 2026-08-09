@@ -9,6 +9,7 @@ public record ChatResponse(
         String userMessage,
         String answer,
         String summary,
+        String selectedModel,
         int totalIterations,
         int totalToolCalls,
         List<AgentStep> steps

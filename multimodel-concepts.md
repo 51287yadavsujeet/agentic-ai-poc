@@ -1,6 +1,73 @@
-# Trip planner agentic flow
+# Multi-Model Concepts — Agentic AI POC
 
-This file explains how the trip-planning flow works in this project and how to call it.
+This document concisely describes the multi-model design decisions, operational guarantees, and extension points for the Agentic AI POC.
+
+## 1. Purpose
+
+- Provide an auditable, deterministic routing layer that chooses the best LLM (OpenAI or Google Gemini) for a given user request.
+- Preserve tool-calling semantics (Java-executed tools) while leveraging each model's strengths.
+
+## 2. Core principles
+
+- Predictability: routing is keyword-driven and deterministic for reproducible behavior.
+- Observability: each selection and fallback is logged with clear prefixes.
+- Resilience: automatic, single-attempt fallback to the alternate provider when the preferred provider fails.
+- Safety: Gemini requests do not include full tool payloads until format mapping is implemented.
+
+## 3. Routing logic
+
+- `ModelSelector` scans the user message for domain keywords (math, history, geography, medical).
+- If a Gemini keyword is present, Gemini is preferred; otherwise OpenAI is used.
+- Clients may override routing with `model` in the request JSON (`GEMINI` or `OPENAI`).
+
+## 4. Fallback mechanics
+
+- Preferred model attempted first.
+- On exception, the agent logs a green console alert (`[FALLBACK ALERT]`) and attempts the alternate model once.
+- If fallback also fails, a red error (`[FALLBACK FAILED]`) is logged; the exception propagates.
+- The returned `ChatResponse.selectedModel` indicates the model that produced the final answer.
+
+## 5. Tool-calling strategy
+
+- `ToolRegistry` exposes function-like tool definitions to OpenAI; OpenAI returns function calls that the agent executes in Java.
+- Gemini's API schema differs — to avoid schema errors we omit tool definitions in Gemini requests until a converter is implemented.
+- Roadmap: implement schema conversion so Gemini can directly request tools.
+
+## 6. Observability and logs
+
+- Primary log prefixes:
+  - `[MODEL_SELECTOR]` — model decision
+  - `[OPENAI_API_CALL]`, `[GEMINI_API_CALL]` — API calls
+  - `[AGENT_DECISION]`, `[AGENT_LOOP]` — agent lifecycle
+  - `[TOOL_CALL]`, `[TOOL_EXECUTION]` — tool activity
+  - `[AGENT_FALLBACK]`, `[FALLBACK ALERT]`, `[FALLBACK FAILED]` — fallback events
+
+- The system writes a clear, colorized console alert when a fallback occurs for fast operator detection.
+
+## 7. Extension points
+
+- Replace keyword routing with a learned classifier or embedding-based router.
+- Implement Gemini function-calling mapping (request and response translation).
+- Add exponential backoff before fallback for transient 429 errors.
+- Instrument metrics: model usage, latency, error rates, fallback counts.
+
+## 8. Production guidance
+
+- Never commit API keys — use secret managers.
+- Monitor quotas for both providers and create alerts.
+- Consider cost-aware routing: route inexpensive queries to the lower-cost provider.
+- Add health checks and circuit-breaker logic before triggering fallback frequently.
+
+## 9. Quick operational checklist
+
+- Set `openai.api-key` and `gemini.api-key`.
+- Test both models via the `model` override.
+- Simulate failures to validate fallback logs and behavior.
+- Review logs for `[FALLBACK ALERT]` after simulated failures.
+
+---
+
+Read `MULTI_MODEL_SETUP.md`, `MULTI_MODEL_EXAMPLES.md`, and `QUICK_REFERENCE.md` for setup and test cases.
 
 The trip flow is a multi-tool orchestration where the model selects from 25+ tools:
 
@@ -51,25 +118,31 @@ agentService.run(message)
 It does the following:
 
 1. logs agent start with `[AGENT_ORCHESTRATION]`
-2. creates a conversation with:
+2. calls `ModelSelector` to determine which model to use:
+   - **Gemini** if message contains: Math, History, Geography, Medical keywords
+   - **OpenAI** otherwise (default)
+   - logs decision with `[AGENT_ORCHESTRATION]` showing selected model
+3. creates a conversation with:
    - system prompt
    - user message
-3. loads all available tool definitions from `ToolRegistry`
-4. logs iteration start with `[AGENT_LOOP]`
-5. sends messages + tools to `OpenAiClient` (logs with `[OPENAI_API_CALL]`)
-6. checks whether the model:
+4. loads all available tool definitions from `ToolRegistry`
+5. logs iteration start with `[AGENT_LOOP]`
+6. sends messages + tools to selected model:
+   - `OpenAiClient` for OpenAI (logs with `[OPENAI_API_CALL]`)
+   - `GeminiClient` for Gemini (logs with `[GEMINI_API_CALL]`)
+7. checks whether the model:
    - returned a final answer, or
    - requested one or more tool calls
-7. logs decision with `[AGENT_DECISION]` showing which option was chosen
-8. if tool calls are requested:
+8. logs decision with `[AGENT_DECISION]` showing which option was chosen
+9. if tool calls are requested:
    - logs tool selection details
    - parse tool arguments
    - execute the tool through `ToolRegistry` (logs with `[TOOL_CALL]`)
    - append tool result back into the conversation
    - call the model again
-9. repeat until a final answer is produced or max iterations is reached
-10. logs final result with `[AGENT_ORCHESTRATION]`
-11. logs response completion with `[API_RESPONSE]`
+10. repeat until a final answer is produced or max iterations is reached
+11. logs final result with `[AGENT_ORCHESTRATION]`
+12. logs response completion with `[API_RESPONSE]`
 
 ## 3. Tool discovery
 
@@ -154,9 +227,14 @@ Browser / Client
     ->
 AgentController (logs [API_REQUEST])
     ->
-AgentService.run(message) (logs [AGENT_ORCHESTRATION], [AGENT_LOOP])
+AgentService.run(message) (logs [AGENT_ORCHESTRATION])
     ->
-OpenAiClient.chatCompletion(messages, tools) (logs [OPENAI_API_CALL])
+ModelSelector.selectModel(message) (logs [MODEL_SELECTOR])
+    -> Routes to:
+       - OpenAiClient (travel/shopping/code queries)
+       - GeminiClient (math/history/geography/medical queries)
+    ->
+Model API call (logs [OPENAI_API_CALL] or [GEMINI_API_CALL])
     ->
 Model decides whether to call one or more trip tools
     ->
@@ -207,19 +285,32 @@ curl.exe -X POST "http://localhost:8080/api/agent/chat" `
 When you make a request, you'll see logs showing the complete flow:
 
 ```bash
-grep AGENT_DECISION application.log  # View all model decisions
-grep TOOL_CALL application.log       # View all tool executions
-grep OPENAI_API_CALL application.log # View all model interactions
+grep MODEL_SELECTOR application.log   # View model selection decisions
+grep AGENT_DECISION application.log   # View all model decisions
+grep TOOL_CALL application.log        # View all tool executions
+grep OPENAI_API_CALL application.log  # View OpenAI model interactions
+grep GEMINI_API_CALL application.log  # View Gemini model interactions
 ```
 
-Example log excerpt:
+Example log excerpt (Trip planning query routes to OpenAI):
 ```
+[MODEL_SELECTOR] No special keywords detected | Selecting default OPENAI model
+[AGENT_ORCHESTRATION] Model Selected: OPENAI | Reason: Default OpenAI
+[OPENAI_API_CALL] Request Details | messageCount=2 | toolCount=25 | model='gpt-4o-mini'
 [AGENT_DECISION] *** DECISION MADE: Execute Tools ***
 [AGENT_DECISION] Iteration 1 will call 3 tool(s)
 [AGENT_DECISION] Tool selected: 'trip_planner' with ID: 'call_xyz'
 [AGENT_DECISION] Tool selected: 'flight_search' with ID: 'call_abc'
 [TOOL_CALL] Tool Execution Result | Tool: 'trip_planner' | resultLength=500
 [TOOL_CALL] Tool Execution Result | Tool: 'flight_search' | resultLength=300
+```
+
+Example log excerpt (Math query routes to Gemini):
+```
+[MODEL_SELECTOR] Keyword 'calculate' detected | Selecting GEMINI model
+[AGENT_ORCHESTRATION] Model Selected: GEMINI | Reason: Keywords detected (Math/History/Geography/Medical)
+[GEMINI_API_CALL] Request Details | messageCount=2 | toolCount=25 | model='gemini-2.0-flash'
+[AGENT_DECISION] *** DECISION MADE: Execute Tools ***
 ```
 
 ## 9. How to verify tool registration

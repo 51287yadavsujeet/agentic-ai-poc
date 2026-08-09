@@ -18,7 +18,8 @@ It runs an agent loop:
 It also demonstrates:
 
 - Spring Boot REST APIs
-- OpenAI tool-calling integration
+- **Multi-model support: OpenAI + Google Gemini with intelligent routing**
+- OpenAI and Gemini tool-calling integration
 - auto-discovered Java tools
 - clean execution trace in API response
 - virtual-thread request handling
@@ -35,7 +36,10 @@ AgentController (logs API request entry)
   ->
 AgentService (orchestrates agent loop)
   ->
-OpenAiClient (calls model with tool definitions)
+ModelSelector (analyzes request content)
+  -> Routes to:
+     - OpenAiClient (default: Travel, Shopping, Code, etc.)
+     - GeminiClient (Math, History, Geography, Medical Science)
   ->
 Model decides:
   - final answer
@@ -64,6 +68,8 @@ src/main/java/com/example/agenticai/
 │       └── impl/ (25+ tool implementations)
 ├── config/
 │   ├── OpenAiProperties.java
+│   ├── GeminiProperties.java
+│   ├── ModelSelector.java
 │   └── VirtualThreadConfig.java
 ├── controller/
 │   └── AgentController.java
@@ -74,6 +80,7 @@ src/main/java/com/example/agenticai/
 │   └── GlobalExceptionHandler.java
 └── openai/
     ├── OpenAiClient.java
+    ├── GeminiClient.java
     └── model/
 ```
 
@@ -94,14 +101,63 @@ Key properties:
 ```properties
 server.port=8080
 spring.threads.virtual.enabled=true
+
+# OpenAI API Configuration
 openai.api-key=sk-proj-...
 openai.model=${OPENAI_MODEL:gpt-4o-mini}
 openai.base-url=https://api.openai.com/v1
+
+# Google Gemini API Configuration
+gemini.api-key=${GEMINI_API_KEY:your-gemini-api-key-here}
+gemini.model=${GEMINI_MODEL:gemini-2.0-flash}
+gemini.base-url=https://generativelanguage.googleapis.com/v1beta/models
+
 logging.level.com.example.agenticai=DEBUG
 logging.level.io.netty.util.internal=OFF
 ```
 
-## How to run
+## Multi-Model Routing
+
+This project supports routing queries to two LLM providers:
+- OpenAI (default) — general-purpose, full tool-calling support
+- Google Gemini — preferred for domain-specific knowledge queries (math, history, geography, medical)
+
+Routing decisions are made by ModelSelector using a small, extensible keyword list. The decision is logged with the `[MODEL_SELECTOR]` prefix and included in API responses as `selectedModel`.
+
+Key points (short):
+- Gemini: strong for math, factual history, geography and medical science queries.
+- OpenAI: default for multi-tool orchestration, travel, recommendations, code, and conversational tasks.
+- Fallback: If the preferred model returns an error (quota, network, etc.) the agent will automatically attempt the other model and log the fallback with `[AGENT_FALLBACK]` and a prominent console alert.
+
+How to force a model in requests
+
+You can override the selector by adding `model` in the request JSON (`"GEMINI"` or `"OPENAI"`):
+
+```json
+{ "message": "Calculate 2+2", "model": "GEMINI" }
+```
+
+Example requests
+
+```bash
+# Gemini (keyword or override)
+curl -X POST http://localhost:8080/api/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Solve: 2x + 5 = 13", "model": "GEMINI"}'
+
+# OpenAI (default)
+curl -X POST http://localhost:8080/api/agent/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"Plan a 3-day trip to Paris"}'
+```
+
+Notes
+
+- Gemini tool-calling is experimental: Ghosted tool definitions are intentionally omitted from Gemini requests to avoid schema errors. OpenAI remains the main path for full tool orchestration.
+- Configure GEMINI_API_KEY and openai.api-key before invoking Gemini. See Configuration section above.
+- The agent returns `selectedModel` in the ChatResponse so clients can see which model produced the answer.
+
+
 
 ### Option 1: Maven directly (recommended)
 

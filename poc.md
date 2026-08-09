@@ -58,26 +58,37 @@ It shows:
 ```text
 Client
   ->
-AgentController (logs request entry)
+AgentController (HTTP entry, validation, request logging)
   ->
-AgentService (orchestrates agent loop with decision logging)
+AgentService (agent loop, decision orchestration, tool execution)
   ->
-OpenAiClient (calls model with tool definitions)
+ModelSelector (content analysis: routes to Gemini or OpenAI)
   ->
-Model decides:
-  - final answer
-  - or one/more tool calls
+  ├─ OpenAiClient  (default path: multi-tool orchestration, travel, code)
+  └─ GeminiClient  (knowledge-heavy queries: math, history, geography, medical)
   ->
-ToolRegistry (executes and logs tool calls)
+Model (selected LLM) decides:
+  - final answer -> AgentService returns response
+  - or tool calls -> AgentService executes tools and feeds results back
   ->
-Tool implementations (individual tool execution)
+ToolRegistry (discovers and runs Tool implementations in Java)
   ->
-tool results returned to AgentService
+Tool implementations (pure Java components; return text results)
   ->
-final ChatResponse with execution trace
+AgentService builds final ChatResponse including an execution trace
 ```
 
 ---
+
+### Multi-model behavior (short)
+
+- ModelSelector uses lightweight keyword matching to choose the preferred LLM. This keeps routing deterministic, auditable, and fast.
+- The agent attempts the preferred model first; on error (e.g., quota, network) it will fall back to the alternative provider and log the fallback with a clear console alert.
+- Tool-calling remains primarily supported via OpenAI; Gemini receives only conversational/knowledge queries unless tool-format mapping is enabled.
+
+---
+
+
 
 ## Core code components
 
@@ -114,12 +125,33 @@ final ChatResponse with execution trace
   - exposes tool definitions to the model
   - executes tools by name
 
-### OpenAI integration
+### Model selection layer
+
+- `ModelSelector`
+  - analyzes user message for domain keywords
+  - routes to OpenAI (default) or Gemini (Math, History, Geography, Medical)
+  - logs routing decision with `[MODEL_SELECTOR]`
+
+### Multi-LLM integration
 
 - `OpenAiClient`
   - logs API calls with `[OPENAI_API_CALL]`
   - performs the model call to the OpenAI API
   - logs configuration and model decisions
+
+- `GeminiClient`
+  - logs API calls with `[GEMINI_API_CALL]`
+  - performs the model call to the Google Gemini API
+  - converts OpenAI format to Gemini format and back
+  - supports tool calls with Gemini
+
+### Configuration
+
+- `OpenAiProperties`
+  - reads `openai.api-key`, `openai.model`, `openai.base-url`
+
+- `GeminiProperties`
+  - reads `gemini.api-key`, `gemini.model`, `gemini.base-url`
 
 ### Response model
 

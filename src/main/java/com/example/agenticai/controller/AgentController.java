@@ -37,9 +37,9 @@ public class AgentController {
         log.info("[API_REQUEST] Processing incoming chat request...");
         
         try {
-            ChatResponse response = agentService.run(request.message());
-            log.info("[API_RESPONSE] Chat request completed | status='{}' | iterations={} | toolCalls={}",
-                    response.status(), response.totalIterations(), response.totalToolCalls());
+            ChatResponse response = agentService.run(request.message(), request.model());
+            log.info("[API_RESPONSE] Chat request completed | status='{}' | model='{}' | iterations={} | toolCalls={}",
+                    response.status(), response.selectedModel(), response.totalIterations(), response.totalToolCalls());
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("[API_ERROR] Error processing chat request: {}", e.getMessage(), e);
@@ -49,16 +49,16 @@ public class AgentController {
 
     /** Browser-friendly endpoint: pass the prompt as a query parameter. */
     @GetMapping("/chat-browser")
-    public ResponseEntity<ChatResponse> chatBrowser(@RequestParam String message) {
+    public ResponseEntity<ChatResponse> chatBrowser(@RequestParam String message, @RequestParam(required = false) String model) {
         log.info("[API_REQUEST] ========== GET /api/agent/chat-browser RECEIVED ==========");
         log.info("[API_REQUEST] Request Details | virtualThread={} | message='{}'",
                 Thread.currentThread().isVirtual(), message);
         log.info("[API_REQUEST] Processing incoming browser chat request...");
         
         try {
-            ChatResponse response = agentService.run(message);
-            log.info("[API_RESPONSE] Browser chat request completed | status='{}' | iterations={} | toolCalls={}",
-                    response.status(), response.totalIterations(), response.totalToolCalls());
+            ChatResponse response = agentService.run(message, model);
+            log.info("[API_RESPONSE] Browser chat request completed | status='{}' | model='{}' | iterations={} | toolCalls={}",
+                    response.status(), response.selectedModel(), response.totalIterations(), response.totalToolCalls());
             return ResponseEntity.ok(response);
         } catch (Exception e) {
             log.error("[API_ERROR] Error processing browser chat request: {}", e.getMessage(), e);

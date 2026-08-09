@@ -1,7 +1,9 @@
 package com.example.agenticai.agent;
 
 import com.example.agenticai.agent.tool.ToolRegistry;
+import com.example.agenticai.config.ModelSelector;
 import com.example.agenticai.dto.ChatResponse;
+import com.example.agenticai.openai.GeminiClient;
 import com.example.agenticai.openai.OpenAiClient;
 import com.example.agenticai.openai.model.ChatCompletionResponse;
 import com.example.agenticai.openai.model.ChatMessage;
@@ -23,7 +25,7 @@ import java.util.concurrent.Future;
  * The heart of the POC. This is what makes the app "agentic" rather than a simple chat
  * wrapper: given a user goal, it repeatedly
  *
- *   1) asks the model what to do next,
+ *   1) asks the model what to do next (via ModelSelector choosing OpenAI or Gemini),
  *   2) if the model requests a tool, executes that tool itself and feeds the result back,
  *   3) repeats until the model is satisfied it can answer directly (or a safety cap is hit).
  *
@@ -44,20 +46,55 @@ public class AgentService {
             """;
 
     private final OpenAiClient openAiClient;
+    private final GeminiClient geminiClient;
+    private final ModelSelector modelSelector;
     private final ToolRegistry toolRegistry;
     private final ExecutorService virtualThreadExecutor;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public AgentService(OpenAiClient openAiClient, ToolRegistry toolRegistry, ExecutorService virtualThreadExecutor) {
+    public AgentService(OpenAiClient openAiClient, GeminiClient geminiClient, 
+                       ModelSelector modelSelector, ToolRegistry toolRegistry, 
+                       ExecutorService virtualThreadExecutor) {
         this.openAiClient = openAiClient;
+        this.geminiClient = geminiClient;
+        this.modelSelector = modelSelector;
         this.toolRegistry = toolRegistry;
         this.virtualThreadExecutor = virtualThreadExecutor;
     }
 
     public ChatResponse run(String userMessage) {
+        return run(userMessage, null);
+    }
+
+    /**
+     * Run the agent with an optional model override. If modelOverride is set to "GEMINI" or "OPENAI",
+     * it will be used; otherwise ModelSelector determines the model.
+     */
+    public ChatResponse run(String userMessage, String modelOverride) {
         log.info("[AGENT_ORCHESTRATION] ========== AGENT RUN STARTED ==========");
         log.info("[AGENT_ORCHESTRATION] User Request: '{}' | virtualThread={} | threadName={}",
                 userMessage, Thread.currentThread().isVirtual(), Thread.currentThread().getName());
+        
+        // Determine selected model (override > selector)
+        ModelSelector.ModelType selectedModel;
+        if (modelOverride != null && !modelOverride.isBlank()) {
+            try {
+                selectedModel = ModelSelector.ModelType.valueOf(modelOverride.trim().toUpperCase());
+                log.info("[AGENT_ORCHESTRATION] Model override provided: {}", selectedModel);
+            } catch (IllegalArgumentException e) {
+                log.warn("[AGENT_ORCHESTRATION] Unknown model override '{}', falling back to selector", modelOverride);
+                selectedModel = modelSelector.selectModel(userMessage);
+            }
+        } else {
+            selectedModel = modelSelector.selectModel(userMessage);
+        }
+
+        log.info("[AGENT_ORCHESTRATION] Model Selected: {} | Reason: {}",
+                selectedModel, selectedModel == ModelSelector.ModelType.GEMINI ? 
+                "Keywords detected (Math/History/Geography/Medical)" : "Default OpenAI");
+        
+        // usedModel reflects the model that actually handled the request (may change if we fallback)
+        ModelSelector.ModelType usedModel = selectedModel;
         
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(ChatMessage.system(SYSTEM_PROMPT));
@@ -71,8 +108,38 @@ public class AgentService {
             log.info("[AGENT_LOOP] Iteration {} | messageCount={} | totalToolCalls={} | virtualThread={}",
                     iteration, messages.size(), totalToolCalls, Thread.currentThread().isVirtual());
             
-            log.debug("[AGENT_DECISION] Calling OpenAI model to determine next action...");
-            ChatCompletionResponse response = openAiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
+            log.debug("[AGENT_DECISION] Calling {} model to determine next action...", selectedModel);
+            ChatCompletionResponse response = null;
+            // Try preferred model, fall back to the other if it fails
+            if (selectedModel == ModelSelector.ModelType.GEMINI) {
+                try {
+                    response = geminiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
+                } catch (Exception e) {
+                    log.warn("[AGENT_ORCHESTRATION] Gemini call failed: {}. Falling back to OpenAI.", e.getMessage());
+                    log.info("\u001B[32m[FALLBACK ALERT] from=GEMINI to=OPENAI reason='{}' userMessage='{}'\u001B[0m", e.getMessage(), userMessage);
+                    try {
+                        response = openAiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
+                        usedModel = ModelSelector.ModelType.OPENAI;
+                    } catch (Exception ex) {
+                        log.error("\u001B[31m[FALLBACK FAILED] OpenAI fallback also failed: {}\u001B[0m", ex.getMessage(), ex);
+                        throw ex;
+                    }
+                }
+            } else {
+                try {
+                    response = openAiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
+                } catch (Exception e) {
+                    log.warn("[AGENT_ORCHESTRATION] OpenAI call failed: {}. Attempting Gemini as fallback.", e.getMessage());
+                    log.info("\u001B[32m[FALLBACK ALERT] from=OPENAI to=GEMINI reason='{}' userMessage='{}'\u001B[0m", e.getMessage(), userMessage);
+                    try {
+                        response = geminiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
+                        usedModel = ModelSelector.ModelType.GEMINI;
+                    } catch (Exception ex) {
+                        log.error("\u001B[31m[FALLBACK FAILED] Gemini fallback also failed: {}\u001B[0m", ex.getMessage(), ex);
+                        throw ex;
+                    }
+                }
+            }
             ChatCompletionResponse.Choice choice = response.choices().get(0);
             ChatMessage assistantMessage = choice.message();
             messages.add(assistantMessage);
@@ -138,6 +205,7 @@ public class AgentService {
                     userMessage,
                     assistantMessage.content(),
                     "Completed successfully after " + iteration + " iteration(s) with " + totalToolCalls + " tool call(s).",
+                    usedModel.name(),
                     iteration,
                     totalToolCalls,
                     steps
@@ -161,6 +229,7 @@ public class AgentService {
                 userMessage,
                 "Stopped after " + MAX_ITERATIONS + " iterations without a final answer.",
                 "The agent reached the safety limit before producing a final answer.",
+                usedModel.name(),
                 MAX_ITERATIONS,
                 totalToolCalls,
                 steps
