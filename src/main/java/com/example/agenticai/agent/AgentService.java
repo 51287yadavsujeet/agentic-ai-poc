@@ -55,8 +55,10 @@ public class AgentService {
     }
 
     public ChatResponse run(String userMessage) {
-        log.info("Agent run started. virtualThread={} userMessage='{}'",
-                Thread.currentThread().isVirtual(), userMessage);
+        log.info("[AGENT_ORCHESTRATION] ========== AGENT RUN STARTED ==========");
+        log.info("[AGENT_ORCHESTRATION] User Request: '{}' | virtualThread={} | threadName={}",
+                userMessage, Thread.currentThread().isVirtual(), Thread.currentThread().getName());
+        
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(ChatMessage.system(SYSTEM_PROMPT));
         messages.add(ChatMessage.user(userMessage));
@@ -65,26 +67,40 @@ public class AgentService {
         int totalToolCalls = 0;
 
         for (int iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
-            log.info("Iteration {} started. conversationMessageCount={} virtualThread={}",
-                    iteration, messages.size(), Thread.currentThread().isVirtual());
+            log.info("[AGENT_LOOP] ========== ITERATION {} START ==========", iteration);
+            log.info("[AGENT_LOOP] Iteration {} | messageCount={} | totalToolCalls={} | virtualThread={}",
+                    iteration, messages.size(), totalToolCalls, Thread.currentThread().isVirtual());
+            
+            log.debug("[AGENT_DECISION] Calling OpenAI model to determine next action...");
             ChatCompletionResponse response = openAiClient.chatCompletion(messages, toolRegistry.toolDefinitions());
             ChatCompletionResponse.Choice choice = response.choices().get(0);
             ChatMessage assistantMessage = choice.message();
             messages.add(assistantMessage);
 
-            log.info("Iteration {} completed model call. finishReason={}", iteration, choice.finishReason());
+            log.info("[AGENT_DECISION] Model Response Received | finishReason='{}' | stopReason indicates: {}",
+                    choice.finishReason(),
+                    "tool_calls".equals(choice.finishReason()) ? "MORE_WORK_NEEDED" : "FINAL_ANSWER");
 
             if ("tool_calls".equals(choice.finishReason()) && assistantMessage.toolCalls() != null) {
-                log.info("Iteration {} requested {} tool call(s).", iteration, assistantMessage.toolCalls().size());
+                log.info("[AGENT_DECISION] *** DECISION MADE: Execute Tools ***");
+                log.info("[AGENT_DECISION] Iteration {} will call {} tool(s)", iteration, assistantMessage.toolCalls().size());
+                
                 int currentIteration = iteration;
                 List<Future<ToolExecutionResult>> futures = new ArrayList<>();
+                
                 for (ToolCall call : assistantMessage.toolCalls()) {
+                    log.info("[AGENT_DECISION] Tool selected: '{}' with ID: '{}'", 
+                            call.function().name(), call.id());
                     futures.add(virtualThreadExecutor.submit(() -> executeToolCall(currentIteration, call)));
                 }
 
+                log.info("[AGENT_EXECUTION] Waiting for {} tool execution(s) to complete...", futures.size());
                 for (Future<ToolExecutionResult> future : futures) {
                     ToolExecutionResult executionResult = waitForToolResult(future);
                     totalToolCalls++;
+
+                    log.info("[AGENT_EXECUTION] Tool Result Added | tool='{}' | toolCallId='{}' | resultLength={}",
+                            executionResult.toolName(), executionResult.toolCallId(), executionResult.result().length());
 
                     steps.add(new AgentStep(
                             iteration,
@@ -100,12 +116,14 @@ public class AgentService {
                             executionResult.result()
                     ));
                 }
-                // loop again: feed tool results back so the model can decide the next step
+                log.info("[AGENT_LOOP] Iteration {} completed | Feeding tool results back to model...", iteration);
                 continue;
             }
 
-            // No more tools requested - this is the model's final answer.
-            log.info("Final answer produced at iteration {}.", iteration);
+            log.info("[AGENT_DECISION] *** DECISION MADE: Return Final Answer ***");
+            log.info("[AGENT_COMPLETION] Final answer produced at iteration {} | totalIterations={} | totalToolCalls={}",
+                    iteration, iteration, totalToolCalls);
+            
             steps.add(new AgentStep(
                     iteration,
                     "final_answer",
@@ -114,7 +132,8 @@ public class AgentService {
                     null,
                     assistantMessage.content()
             ));
-            return new ChatResponse(
+            
+            ChatResponse finalResponse = new ChatResponse(
                     "success",
                     userMessage,
                     assistantMessage.content(),
@@ -123,9 +142,20 @@ public class AgentService {
                     totalToolCalls,
                     steps
             );
+            
+            log.info("[AGENT_ORCHESTRATION] ========== AGENT RUN COMPLETED SUCCESSFULLY ==========");
+            log.info("[AGENT_ORCHESTRATION] Result | status='{}' | iterations={} | toolCalls={} | answerLength={}",
+                    finalResponse.status(), iteration, totalToolCalls, assistantMessage.content().length());
+            
+            return finalResponse;
         }
 
-        log.warn("Agent stopped after {} iterations without a final answer.", MAX_ITERATIONS);
+        log.warn("[AGENT_ORCHESTRATION] *** SAFETY LIMIT REACHED *** Agent stopped after {} iterations without a final answer.",
+                MAX_ITERATIONS);
+        log.info("[AGENT_ORCHESTRATION] ========== AGENT RUN INCOMPLETE ==========");
+        log.info("[AGENT_ORCHESTRATION] Result | status='incomplete' | maxIterations={} | totalToolCalls={}",
+                MAX_ITERATIONS, totalToolCalls);
+        
         return new ChatResponse(
                 "incomplete",
                 userMessage,
@@ -139,33 +169,46 @@ public class AgentService {
 
     private ToolExecutionResult executeToolCall(int iteration, ToolCall call) {
         String toolName = call.function().name();
+        String toolCallId = call.id();
         Map<String, Object> args = parseArguments(call.function().arguments());
-        log.info("Iteration {} executing tool '{}' on thread='{}' virtualThread={} arguments={}",
-                iteration,
-                toolName,
+        
+        log.info("[TOOL_CALL] ========== EXECUTING TOOL ==========");
+        log.info("[TOOL_CALL] Iteration {} | Tool: '{}' | ToolCallId: '{}'",
+                iteration, toolName, toolCallId);
+        log.info("[TOOL_CALL] Execution Context | thread='{}' | virtualThread={} | arguments={}",
                 Thread.currentThread().getName(),
                 Thread.currentThread().isVirtual(),
                 args);
 
         String result = toolRegistry.execute(toolName, args);
 
-        log.info("Iteration {} tool '{}' completed on thread='{}' virtualThread={} result='{}'",
+        log.info("[TOOL_CALL] Tool Execution Result | Iteration {} | Tool: '{}' | resultLength={} | resultPreview='{}'",
                 iteration,
                 toolName,
+                result.length(),
+                result.substring(0, Math.min(100, result.length())));
+        
+        log.info("[TOOL_CALL] Execution completed on thread='{}' virtualThread={}",
                 Thread.currentThread().getName(),
-                Thread.currentThread().isVirtual(),
-                result);
+                Thread.currentThread().isVirtual());
 
-        return new ToolExecutionResult(call.id(), toolName, args, result);
+        return new ToolExecutionResult(toolCallId, toolName, args, result);
     }
 
     private ToolExecutionResult waitForToolResult(Future<ToolExecutionResult> future) {
+        log.debug("[TOOL_ASYNC] Waiting for tool execution result on thread: {}", 
+                Thread.currentThread().getName());
         try {
-            return future.get();
+            ToolExecutionResult result = future.get();
+            log.debug("[TOOL_ASYNC] Successfully retrieved tool execution result for tool: {}", 
+                    result.toolName());
+            return result;
         } catch (InterruptedException e) {
+            log.error("[TOOL_ASYNC] Interrupted while waiting for tool execution", e);
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while waiting for virtual-thread tool execution", e);
         } catch (ExecutionException e) {
+            log.error("[TOOL_ASYNC] Tool execution failed with exception: {}", e.getMessage(), e);
             throw new IllegalStateException("Virtual-thread tool execution failed", e.getCause());
         }
     }

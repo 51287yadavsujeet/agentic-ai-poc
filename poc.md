@@ -1,412 +1,198 @@
-# Agentic AI POC with Virtual Threads
+# Agentic AI POC
 
-## 1. Executive summary
+## Executive summary
 
-This proof of concept demonstrates a Spring Boot agentic application that:
+This project is a Spring Boot 3 + JDK 21 proof of concept for an agentic AI application.
 
-- accepts a user request
-- sends the request to an LLM with tool definitions
-- lets the model decide which tools to call
-- executes tools inside the application
-- feeds tool results back to the model
-- returns a final human-readable response with execution trace
+It demonstrates:
 
-The POC also uses Java virtual threads to improve concurrency for blocking request handling and tool execution while keeping the code simple and synchronous.
+- model-driven tool calling
+- iterative agent orchestration
+- clean execution-trace responses
+- virtual-thread-based request handling
+- virtual-thread-based concurrent tool execution
+- **comprehensive structured logging for complete code flow traceability**
+- **decision-making visibility through strategic log prefixes**
 
-This is suitable for a business demo because it shows:
+The core business message is simple:
 
-- agentic orchestration
-- tool-based decisioning
-- clean API responses
-- observable execution flow
-- scalable concurrency model
+this POC shows how a Java application can move from plain chatbot behavior to guided task execution while remaining readable, observable, and scalable for blocking workloads.
 
 ---
 
-## 2. What this POC does
+## What the POC does
 
-The application exposes agent endpoints such as:
+The application accepts a user message, sends it to the model along with all registered tool definitions, lets the model decide whether to answer directly or call tools, executes those tools in Java, feeds the results back to the model, and finally returns a human-readable answer with traceable steps.
+
+Available APIs:
 
 - `POST /api/agent/chat`
-- `GET /api/agent/chat-browser`
+- `GET /api/agent/chat-browser?message=...`
 - `GET /api/agent/tools`
 
-The agent can use multiple travel-oriented tools, including:
+Current domain focus:
 
-- weather
-- trip planning
-- hotels
-- flights
-- trains
-- cab fare
-- budget estimation
-- packing help
-- medical help
-- restaurant suggestions
-- local transport help
-- visa checklist
-- weather forecast
-- trip summary
-
-All tools are currently deterministic demo tools with static or mock data.
+- utility tools
+- travel-planning tools
+- travel-readiness tools
 
 ---
 
-## 3. Business value
+## Why this matters for a business demo
 
-This POC demonstrates how an AI application can move beyond simple Q&A into guided task execution.
+This POC demonstrates more than prompt/response AI.
 
-Business outcomes shown by this design:
+It shows:
 
-- faster response assembly from multiple capabilities
-- better user experience through structured answers
-- strong explainability through step trace and logs
-- easier scale for blocking workloads using virtual threads
-- extensibility through plug-in style tools
+- the model can decide which internal capabilities to use
+- application logic remains in your control
+- execution is transparent through logs and JSON steps
+- the architecture scales better for blocking I/O with virtual threads
+- new capabilities can be added by implementing a single tool contract
+- **complete visibility into agentic decision-making through structured logs**
 
 ---
 
-## 4. High-level code flow
+## Current architecture
 
 ```text
-Client request
-   ->
-AgentController
-   ->
-AgentService.run(userMessage)
-   ->
-OpenAiClient.chatCompletion(messages, toolDefinitions)
-   ->
+Client
+  ->
+AgentController (logs request entry)
+  ->
+AgentService (orchestrates agent loop with decision logging)
+  ->
+OpenAiClient (calls model with tool definitions)
+  ->
 Model decides:
-   - final answer
-   - or one/more tool calls
-   ->
-ToolRegistry finds the tool implementation
-   ->
-Tool executes
-   ->
-Tool result is added back to conversation
-   ->
-Model produces final answer
-   ->
-ChatResponse returned to client
+  - final answer
+  - or one/more tool calls
+  ->
+ToolRegistry (executes and logs tool calls)
+  ->
+Tool implementations (individual tool execution)
+  ->
+tool results returned to AgentService
+  ->
+final ChatResponse with execution trace
 ```
 
 ---
 
-## 5. Main code components
+## Core code components
 
-### Entry layer
+### Entry and API layer
 
 - `AgentController`
-  - receives HTTP requests
-  - logs request entry
-  - forwards user message to service
+  - logs request entry with `[API_REQUEST]`
+  - logs response completion with `[API_RESPONSE]`
+  - calls `AgentService.run(...)`
 
 ### Orchestration layer
 
 - `AgentService`
-  - builds conversation
+  - logs agent lifecycle with `[AGENT_ORCHESTRATION]`
+  - logs each iteration with `[AGENT_LOOP]`
+  - logs critical decisions with `[AGENT_DECISION]`
+  - logs tool execution orchestration with `[AGENT_EXECUTION]`
+  - builds the conversation
   - sends messages and tool definitions to the model
-  - handles tool calls
-  - records execution steps
-  - returns clean response JSON
+  - handles tool-call iterations
+  - executes tools
+  - records human-readable steps
+  - returns `ChatResponse`
 
-### Tool discovery and execution
+### Tool model
 
 - `Tool`
-  - common interface for every tool
+  - standard interface for all tools
 
 - `ToolRegistry`
-  - auto-discovers all Spring `Tool` beans
+  - logs registry initialization with `[TOOL_REGISTRY]`
+  - logs tool execution with `[TOOL_EXECUTION]`
+  - auto-discovers Spring `Tool` beans
   - exposes tool definitions to the model
-  - executes requested tools by name
+  - executes tools by name
 
 ### OpenAI integration
 
 - `OpenAiClient`
-  - sends model requests
-  - receives model tool calls or final answer
+  - logs API calls with `[OPENAI_API_CALL]`
+  - performs the model call to the OpenAI API
+  - logs configuration and model decisions
 
 ### Response model
 
 - `ChatResponse`
-  - top-level business-friendly response
+  - clean top-level response model
 
 - `AgentStep`
-  - each execution step in a readable format
+  - human-readable execution trace per iteration
 
-### Virtual thread configuration
+### Virtual-thread configuration
 
 - `VirtualThreadConfig`
-  - provides a `newVirtualThreadPerTaskExecutor()`
+  - exposes `Executors.newVirtualThreadPerTaskExecutor()`
 
 ---
 
-## 6. Current request-response flow
+## End-to-end code flow
 
-### Step-by-step
+### Normal flow
 
-1. user calls `/api/agent/chat` or `/api/agent/chat-browser`
-2. controller logs the request
-3. controller calls `agentService.run(message)`
+1. client sends request to `/api/agent/chat` or `/api/agent/chat-browser`
+2. `AgentController` logs the request with `[API_REQUEST]` and forwards the message
+3. `AgentService` starts the agent run and logs with `[AGENT_ORCHESTRATION]`
 4. `AgentService` creates:
    - system prompt
    - user message
-5. `AgentService` sends:
-   - messages
-   - all tool definitions
-   to the model
+5. `AgentService` calls `OpenAiClient.chatCompletion(...)` and logs with `[OPENAI_API_CALL]`
 6. the model either:
-   - answers directly, or
+   - returns a final answer, or
    - requests one or more tools
-7. if tools are requested:
-   - the tool arguments are parsed
-   - tools are executed
-   - results are recorded in the trace
-   - tool results are added back into the conversation
-8. the model is called again
-9. final answer is returned as structured JSON
+7. `AgentService` logs the decision with `[AGENT_DECISION]`
+8. when tools are requested:
+   - tool arguments are parsed
+   - tools are executed through `ToolRegistry` with `[TOOL_CALL]` logging
+   - results are added back into the conversation
+   - a readable `AgentStep` is recorded
+9. the model is called again
+10. once a final answer is produced, a structured `ChatResponse` is returned
+11. `AgentController` logs response completion with `[API_RESPONSE]`
+
+### Safety behavior
+
+- the loop stops after a maximum of 6 iterations
+- if no final answer is produced, the response status becomes `incomplete`
+- safety stops are logged with `[AGENT_ORCHESTRATION]` at WARN level
 
 ---
 
-## 7. Virtual thread usage in this POC
+## Logging and Observability
 
-Virtual threads are used in two places.
+### Key Log Categories
 
-### 7.1 HTTP request handling
-
-Configured in:
-
-`application.properties`
-
-```properties
-spring.threads.virtual.enabled=true
-```
-
-Effect:
-
-- Spring Boot serves HTTP requests on virtual threads
-- each incoming request gets a lightweight thread
-- blocking controller/service code remains simple
-
-### 7.2 Tool execution
-
-Configured in:
-
-- `VirtualThreadConfig`
-- `AgentService`
-
-Implementation approach:
-
-- a virtual-thread executor is created using:
-
-```java
-Executors.newVirtualThreadPerTaskExecutor()
-```
-
-- when the model requests multiple tools in the same iteration:
-  - each tool call is submitted to the virtual-thread executor
-  - tool executions can run concurrently
-  - results are collected and added back into the model conversation
-
-This means virtual threads are not just enabled at framework level; they are also used explicitly in application logic.
+| Prefix | Level | Purpose | When Used |
+|--------|-------|---------|-----------|
+| `[API_REQUEST]` | INFO | HTTP request entry | Request received at controller |
+| `[API_RESPONSE]` | INFO | Response completion | Response sent back to client |
+| `[AGENT_ORCHESTRATION]` | INFO | Main agent lifecycle | Agent started/completed/safety limit |
+| `[AGENT_LOOP]` | INFO | Iteration tracking | Each iteration begins |
+| `[AGENT_DECISION]` | **INFO** | **Decision-making points** | **Tool selection vs final answer** |
+| `[AGENT_EXECUTION]` | INFO | Tool execution orchestration | Tools executing, results collected |
+| `[OPENAI_API_CALL]` | INFO | Model interactions | Model called, response received |
+| `[TOOL_REGISTRY]` | DEBUG | Tool registration | Registry initialization |
+| `[TOOL_EXECUTION]` | INFO | Tool lookup/execution | Tool executing, result received |
+| `[TOOL_CALL]` | **INFO** | **Individual tool execution** | **Tool running on virtual thread** |
+| `[TOOL_ASYNC]` | DEBUG | Async handling | Waiting for tool result |
 
 ---
 
-## 8. Without virtual threads vs with virtual threads
+## Current response format
 
-## Without virtual threads
+The API now returns a clean business-readable JSON payload.
 
-```text
-HTTP request
-   ->
-platform thread from server pool
-   ->
-controller
-   ->
-service
-   ->
-blocking OpenAI call
-   ->
-blocking tool calls
-   ->
-response
-```
-
-Characteristics:
-
-- each request occupies a platform thread
-- blocked I/O keeps that expensive thread occupied
-- higher concurrency requires more server threads
-- memory and thread scheduling overhead are higher
-- parallel tool execution is more costly
-
-## With virtual threads
-
-```text
-HTTP request
-   ->
-virtual thread
-   ->
-controller
-   ->
-service
-   ->
-blocking OpenAI call
-   ->
-tool calls on virtual threads
-   ->
-response
-```
-
-Characteristics:
-
-- each request can run on a lightweight virtual thread
-- blocking code remains readable
-- many more concurrent blocking tasks can be handled efficiently
-- independent tool calls can run concurrently at lower cost
-
----
-
-## 9. Comparison table
-
-| Area | Without virtual threads | With virtual threads |
-|---|---|---|
-| Request handling | Platform thread per request | Virtual thread per request |
-| Blocking OpenAI/API wait | Occupies platform thread | Occupies virtual thread |
-| Code style | Synchronous | Synchronous |
-| Concurrency cost | Higher | Lower |
-| Memory footprint under load | Higher | Lower |
-| Thread pool tuning pressure | Higher | Lower |
-| Multiple tool execution | Sequential or expensive parallelism | Cheap concurrent execution |
-| Complexity vs reactive style | Low | Low |
-| Scalability for blocking workloads | Moderate | Better |
-
----
-
-## 10. Benefits of using virtual threads
-
-### 10.1 Better scalability for blocking workloads
-
-This app waits on:
-
-- model API calls
-- tool execution
-- future external services
-
-Virtual threads are designed for this kind of blocking workflow.
-
-### 10.2 Keeps the code simple
-
-The app remains imperative and readable:
-
-- controller calls service
-- service calls model
-- tools execute normally
-
-There is no need to convert the application into callback-heavy or reactive code just to improve concurrency.
-
-### 10.3 Lower thread overhead
-
-Platform threads are expensive compared to virtual threads.
-
-With many simultaneous users:
-
-- platform-thread usage scales poorly
-- virtual threads scale more efficiently
-
-### 10.4 Good fit for agentic workflows
-
-Agentic flows often include:
-
-- multiple blocking external calls
-- repeated request/response loops
-- tool fan-out patterns
-
-Virtual threads are well-suited for these orchestration patterns.
-
-### 10.5 Better business-demo observability
-
-Because the code remains synchronous and readable:
-
-- logging is easier to follow
-- flow is easier to explain to non-engineering stakeholders
-- technical architecture is easier to present
-
----
-
-## 11. Pros and cons
-
-### Pros
-
-- simple programming model
-- better concurrency for blocking workloads
-- lower cost than large platform-thread pools
-- easy adoption in existing synchronous Spring code
-- useful for tool fan-out and orchestration
-- clearer operational story for demos and scale discussions
-
-### Cons
-
-- not a performance boost for CPU-heavy logic
-- does not solve bad locking or synchronization design
-- some libraries may not behave ideally if they pin carrier threads
-- tool execution still depends on how the model decides to call tools
-- if the model requests tools sequentially across iterations, concurrency benefit is limited
-
----
-
-## 12. When virtual threads help most in this POC
-
-Highest-value areas:
-
-- OpenAI API request wait time
-- multiple tools requested in one iteration
-- future live integrations:
-  - flights
-  - hotels
-  - forex
-  - weather APIs
-  - databases
-
-Lower-value areas:
-
-- simple arithmetic
-- static string generation
-- CPU-only computations
-
----
-
-## 13. Logging and observability now available
-
-The application now logs:
-
-- controller entry
-- whether the current thread is virtual
-- agent start
-- each iteration start
-- model finish reason
-- number of tool calls requested
-- each tool name and arguments
-- each tool completion
-- final answer generation
-- safety-stop condition
-
-This is useful for:
-
-- debugging
-- demo walkthroughs
-- explaining the agent loop
-- showing virtual-thread execution behavior
-
----
-
-## 14. Clean response JSON for demo use
-
-The response is now business-readable.
-
-Example shape:
+Example:
 
 ```json
 {
@@ -439,112 +225,353 @@ Example shape:
 }
 ```
 
-Why this is better:
+Why this format is better:
 
-- easier for humans to read
-- easier for UI integration
-- easier for API demo screens
-- easier to explain execution steps
-
----
-
-## 15. Demo talking points for business stakeholders
-
-### What is special about this POC?
-
-- it is not a simple chatbot
-- it can decide when to use tools
-- it shows transparent execution steps
-- it is built to scale blocking workloads more efficiently with virtual threads
-
-### Why does virtual thread usage matter?
-
-- it improves concurrency without making the code harder to maintain
-- it is a practical modernization path for Java applications
-- it supports future growth when live APIs are introduced
-
-### Why is this architecture extensible?
-
-- every new capability is just a new `Tool`
-- Spring auto-registers tools
-- the model can decide how to use them
+- easier for demos
+- easier for UI consumption
+- clearer tool trace
+- no raw JSON-string tool input fields
 
 ---
 
-## 16. Suggested live demo flow
+## Current tool inventory
 
-Recommended demo sequence:
+### Utility tools
 
-1. show `/api/agent/tools`
-   - demonstrates the available business capabilities
+- `get_weather`
+- `calculator`
+- `get_current_time`
+- `weather_forecast`
+
+### Trip planning tools
+
+- `plan_trip`
+- `places_to_visit`
+- `search_flights`
+- `search_trains`
+- `get_hotel_details`
+- `local_transport_help`
+- `estimate_cab_fare`
+- `estimate_trip_budget`
+- `calculate_currency`
+- `expense_splitter`
+- `restaurant_suggestions`
+- `trip_summary`
+- `trip_checklist`
+
+### Travel readiness tools
+
+- `packing_help`
+- `medical_help`
+- `visa_requirements`
+- `emergency_contacts_help`
+- `language_help`
+
+Current tool discovery model:
+
+- every tool is a Spring `@Component`
+- every tool implements `Tool`
+- registration is automatic through `ToolRegistry`
+
+---
+
+## Virtual thread usage in this project
+
+Virtual threads are used in two distinct ways.
+
+## 1. Virtual-thread request handling
+
+Configured in:
+
+```properties
+spring.threads.virtual.enabled=true
+```
+
+Effect:
+
+- Spring handles incoming HTTP requests on virtual threads
+- blocking controller/service code stays simple
+- the application is better suited for many concurrent blocking requests
+
+## 2. Virtual-thread tool execution
+
+Implemented in:
+
+- `VirtualThreadConfig`
+- `AgentService`
+
+Executor used:
+
+```java
+Executors.newVirtualThreadPerTaskExecutor()
+```
+
+Behavior:
+
+- when the model returns multiple tool calls in the same iteration
+- each tool call is submitted to the virtual-thread executor
+- those tool executions can run concurrently
+- results are collected and added back into the conversation
+
+This means the project is not only configured for virtual threads at the framework layer; it also uses them directly in application logic.
+
+---
+
+## Request/response flow without virtual threads
+
+```text
+HTTP request
+  ->
+platform thread
+  ->
+controller
+  ->
+service
+  ->
+blocking OpenAI call
+  ->
+blocking tool calls
+  ->
+response
+```
+
+Operational characteristics:
+
+- one platform thread is occupied per blocking request
+- blocked network waits hold expensive threads
+- concurrency requires larger thread pools
+- memory and scheduling overhead rise faster under load
+
+---
+
+## Request/response flow with virtual threads
+
+```text
+HTTP request
+  ->
+virtual thread
+  ->
+controller
+  ->
+service
+  ->
+blocking OpenAI call
+  ->
+tool calls on virtual threads
+  ->
+response
+```
+
+Operational characteristics:
+
+- each request gets a lightweight virtual thread
+- blocking code stays imperative and readable
+- many more concurrent blocking tasks can be served efficiently
+- independent tool work can run concurrently at lower thread cost
+
+---
+
+## Comparison summary
+
+| Area | Without virtual threads | With virtual threads |
+|---|---|---|
+| Request thread model | Platform thread per request | Virtual thread per request |
+| Blocking API wait | Holds platform thread | Holds virtual thread |
+| Code style | Synchronous | Synchronous |
+| Concurrency cost | Higher | Lower |
+| Memory overhead under load | Higher | Lower |
+| Tool fan-out | Sequential or more expensive concurrency | Cheaper concurrency |
+| Operational simplicity | Simple | Simple |
+| Fit for blocking AI workflows | Moderate | Better |
+
+---
+
+## Benefits of virtual threads here
+
+### Better scalability for blocking workloads
+
+This application blocks on:
+
+- OpenAI API requests
+- tool execution
+- future external services such as weather, hotel, flight, or database calls
+
+Virtual threads are a strong fit for this pattern.
+
+### Keeps the code simple
+
+The application remains easy to read:
+
+- controller calls service
+- service calls model
+- model requests tools
+- tools run in normal Java methods
+
+No callback-heavy orchestration is required.
+
+### Better fit for agentic tool loops
+
+Agentic systems often need:
+
+- repeated model calls
+- external tool calls
+- partial fan-out
+- blocking waits
+
+Virtual threads support this model well.
+
+### Better demo and debugging story
+
+The code flow remains easy to explain, and the logs clearly show:
+
+- request entry
+- virtual-thread usage
+- tool-call flow
+- final-answer generation
+
+---
+
+## Pros and cons
+
+### Pros
+
+- simple programming model
+- better concurrency for blocking workflows
+- lower overhead than many platform threads
+- easy adoption in synchronous Spring code
+- useful for multi-tool orchestration
+
+### Cons
+
+- not a CPU-speed optimization
+- does not fix poor synchronization design
+- benefit depends on blocking workloads being present
+- tool concurrency only happens when the model asks for multiple tools in the same iteration
+- some third-party libraries can reduce virtual-thread efficiency if they pin carrier threads
+
+---
+
+## Where virtual threads help most in this POC
+
+Highest value:
+
+- OpenAI request waits
+- multiple tool calls in one iteration
+- future live integrations for:
+  - weather
+  - hotels
+  - flights
+  - forex
+  - databases
+
+Lower value:
+
+- static mock-data tools
+- simple arithmetic
+- pure CPU-only computations
+
+---
+
+## Logging and observability
+
+The application now logs:
+
+- controller request entry
+- whether the current thread is virtual
+- agent-run start
+- each iteration start
+- model finish reason
+- number of tool calls requested
+- tool name and parsed arguments
+- tool completion
+- final answer generation
+- safety-stop behavior
+
+This is useful for:
+
+- demo walkthroughs
+- debugging
+- explaining the execution path
+- validating virtual-thread usage
+
+---
+
+## Suggested demo flow
+
+1. open `/api/agent/tools`
+   - show the capability surface
 
 2. call `/api/agent/chat-browser`
-   - ask for a travel plan that triggers multiple tools
+   - use a prompt that can trigger multiple tools
 
-3. show structured response JSON
-   - highlight summary, tool calls, and final answer
-
-4. show application logs
+3. show the JSON response
    - highlight:
-     - virtual thread usage
-     - tool execution flow
-     - final response generation
+     - final answer
+     - summary
+     - tool-call steps
 
-5. explain scalability story
-   - same readable code
-   - better concurrency model
-   - easier path to production-grade integrations
+4. show the application logs
+   - highlight:
+     - virtual threads in request handling
+     - tool execution on virtual threads
+     - final-answer completion
 
----
-
-## 17. Current limitations
-
-- tool data is mock/static, not live
-- tool orchestration still depends on model decisions
-- some tools may execute sequentially if the model requests them that way
-- `trip_summary` currently combines provided sections; it does not independently orchestrate all other tools by itself
-- no dedicated load test or benchmark is included yet
+5. explain the scale story
+   - simple code
+   - blocking-workload friendly
+   - easier growth path to production integrations
 
 ---
 
-## 18. Recommended next steps
+## Current limitations
+
+- travel data is mostly mock/static
+- no persistence of conversation history
+- no authentication or rate limiting
+- no benchmark document yet
+- `trip_summary` is a summary-composition tool, not a full internal orchestrator
+- tool parallelism depends on the model returning multiple tool calls in one iteration
+
+---
+
+## Recommended next steps
 
 ### Short term
 
-- add structured JSON output for each tool
+- add structured JSON output for individual tools
 - add a dedicated `full_trip_plan` orchestration path
-- add a small UI page for business demos
 - add request correlation IDs in logs
+- add a simple demo UI
 
 ### Medium term
 
 - replace mock tools with live APIs
 - add caching for repeated lookups
-- add rate limits and fault handling
+- add retry/fault handling
 - add metrics for:
-  - tool latency
   - model latency
+  - tool latency
   - iteration count
   - virtual-thread concurrency
 
 ### Long term
 
 - production-grade travel orchestration
-- user profile and preference memory
-- cost controls and observability dashboards
+- user preferences and memory
+- dashboards for observability and cost
 
 ---
 
-## 19. Final conclusion
+## Final conclusion
 
-This POC demonstrates a clean Java/Spring agentic architecture with:
+This POC demonstrates a practical Java agentic architecture with:
 
-- model-driven tool usage
-- extensible travel tools
+- model-driven tool selection
+- extensible Spring-managed tools
 - structured response output
-- detailed execution logging
+- detailed execution logs
 - real virtual-thread adoption
 
-The main technical message is clear:
+The main technical conclusion is:
 
-virtual threads let this application keep a simple synchronous design while improving concurrency behavior for blocking AI and tool workflows.
+virtual threads let this application keep a clean synchronous design while improving concurrency behavior for blocking AI and tool workflows.
